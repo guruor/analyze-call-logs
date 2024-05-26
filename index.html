@@ -1,0 +1,676 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Call Log Analyzer</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        margin: 0;
+        padding: 0;
+        overflow-x: hidden;
+      }
+      .container {
+        padding: 20px;
+      }
+      .hidden {
+        display: none !important;
+      }
+      .view-buttons {
+        display: flex;
+        justify-content: flex-end;
+        margin-bottom: 10px;
+      }
+      .view-button {
+        margin-left: 10px;
+        cursor: pointer;
+      }
+      .tabs {
+        display: flex;
+        margin-bottom: 20px;
+      }
+      .tab {
+        padding: 10px;
+        cursor: pointer;
+        border: 1px solid #ccc;
+        margin-right: 5px;
+      }
+      .tab.active {
+        background-color: #007bff;
+        color: white;
+      }
+      .table-container {
+        overflow-x: auto;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-bottom: 10px;
+      }
+      th,
+      td {
+        padding: 10px;
+        text-align: left;
+        border-bottom: 1px solid #ddd;
+      }
+      th {
+        cursor: pointer;
+        position: relative;
+      }
+
+      th::after {
+        content: ""; /* Default content for sorting indicator */
+        position: absolute;
+        top: 50%;
+        right: -5px;
+        transform: translateY(-50%);
+        color: #666; /* Adjust color as needed */
+      }
+
+      th.sorted-asc::after {
+        content: " ▲"; /* Content for ascending sort */
+      }
+
+      th.sorted-desc::after {
+        content: " ▼"; /* Content for descending sort */
+      }
+
+      .pagination-container {
+        text-align: right;
+      }
+      .pagination-button {
+        margin: 0 2px;
+        cursor: pointer;
+      }
+      .pagination-button.active {
+        font-weight: bold;
+      }
+      .summary-container {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: space-around;
+      }
+      .chart-row {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: center;
+      }
+      .chart-container {
+        width: 40%;
+        margin: 10px;
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        flex-grow: 1;
+      }
+      .pie-chart {
+        width: 100%;
+        width: 300px;
+        height: 300px;
+        height: auto;
+      }
+      .legend-container {
+        overflow-y: auto;
+        width: 300px;
+        height: 300px;
+        padding-left: 10px;
+        padding-top: 50px;
+        flex-grow: 1;
+        font-size: 10px;
+      }
+      .legend-item {
+        display: flex;
+        align-items: center;
+        margin-bottom: 5px;
+      }
+      .legend-color {
+        width: 12px;
+        height: 12px;
+        margin-right: 5px;
+        display: inline-block;
+      }
+      @media (max-width: 600px) {
+        .chart-container {
+          width: 100%;
+        }
+        .tabs {
+          flex-direction: column;
+        }
+        .tab {
+          margin-bottom: 5px;
+        }
+      }
+      /* Home view styling */
+      .home-view {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        height: 100vh;
+      }
+      .home-view-button {
+        padding: 10px 20px;
+        margin: 10px;
+        cursor: pointer;
+        border: none;
+        color: white;
+        background-color: #007bff;
+        border-radius: 5px;
+        transition: background-color 0.3s ease;
+      }
+      .home-view-button:hover {
+        background-color: #0056b3;
+      }
+      .file-input {
+        display: none;
+      }
+      .file-input-label {
+        padding: 10px 20px;
+        margin: 10px;
+        cursor: pointer;
+        border: none;
+        color: white;
+        background-color: #28a745;
+        border-radius: 5px;
+        transition: background-color 0.3s ease;
+      }
+      .file-input-label:hover {
+        background-color: #218838;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="home-view" class="container home-view">
+      <button
+        class="home-view-button"
+        onclick="window.location.href='https://f-droid.org/en/packages/com.github.tmo1.sms_ie/'"
+      >
+        Download Call Logs
+      </button>
+      <label for="file-input" class="file-input-label">Upload JSON</label>
+      <input type="file" id="file-input" class="file-input" />
+    </div>
+    <div id="tab-summary-view" class="container hidden">
+      <div class="tabs" id="tabs"></div>
+      <div class="view-buttons">
+        <div class="view-button" id="summary-view-button" title="Summary View">
+          📊
+        </div>
+        <div class="view-button" id="detail-view-button" title="Detail View">
+          📋
+        </div>
+      </div>
+      <div id="data-container"></div>
+    </div>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script>
+      const LogViewType = {
+        SUMMARY: 1,
+        DETAILED: 2,
+      };
+      const CallType = {
+        UNKNOWN: 0,
+        INCOMING: 1,
+        OUTGOING: 2,
+        MISSED: 3,
+        DECLINED: 5,
+      };
+
+      const CallTypeReverse = Object.keys(CallType).reduce((obj, key) => {
+        obj[CallType[key]] = key;
+        return obj;
+      }, {});
+
+      const DEFAULT_PHONE_ACCOUNT_ADDRESS = "Unknown Address";
+      const DEFAULT_NAME = "Unknown Number";
+      const RESULTS_PER_PAGE = 10;
+
+      let processedResults = {};
+      let lastSortIndex = null;
+      let lastSortOrder = "asc";
+      let currentView = "summary";
+
+      document
+        .getElementById("file-input")
+        .addEventListener("change", handleFileUpload);
+      document
+        .getElementById("summary-view-button")
+        .addEventListener("click", () => switchView(LogViewType.SUMMARY));
+      document
+        .getElementById("detail-view-button")
+        .addEventListener("click", () => switchView(LogViewType.DETAILED));
+
+      function handleFileUpload(event) {
+        const file = event.target.files[0];
+        if (file) {
+          const reader = new FileReader();
+          reader.onload = function (e) {
+            const callLogs = JSON.parse(e.target.result);
+            processedResults = processCallLogs(callLogs);
+            renderTabs();
+            showView("tab-summary-view");
+          };
+          reader.readAsText(file);
+        }
+      }
+
+      function processCallLogs(callLogs) {
+        const accountInfo = {};
+
+        callLogs.forEach((call) => {
+          const phoneAccount =
+            call.phone_account_address || DEFAULT_PHONE_ACCOUNT_ADDRESS;
+          const name = call.name || DEFAULT_NAME;
+          const number = call.number;
+          const nameNumberCombo = `${name} (${number})`;
+          const durationInMinutes = parseInt(call.duration) / 60;
+          const callType = parseInt(call.type) || CallType.UNKNOWN;
+
+          if (!accountInfo[phoneAccount]) {
+            accountInfo[phoneAccount] = {};
+          }
+
+          if (!accountInfo[phoneAccount][nameNumberCombo]) {
+            accountInfo[phoneAccount][nameNumberCombo] = {
+              total_duration: 0,
+              call_count: 0,
+            };
+
+            Object.keys(CallType).forEach((type) => {
+              accountInfo[phoneAccount][nameNumberCombo][
+                `${CallTypeReverse[CallType[type]].toLowerCase()}_calls`
+              ] = [];
+            });
+          }
+
+          accountInfo[phoneAccount][nameNumberCombo].total_duration +=
+            durationInMinutes;
+          accountInfo[phoneAccount][nameNumberCombo].call_count += 1;
+          accountInfo[phoneAccount][nameNumberCombo][
+            `${CallTypeReverse[callType].toLowerCase()}_calls`
+          ].push(call);
+        });
+
+        return accountInfo;
+      }
+
+      function renderTabs() {
+        const tabsContainer = document.getElementById("tabs");
+        tabsContainer.innerHTML = "";
+
+        Object.keys(processedResults).forEach((account, index) => {
+          const tab = document.createElement("div");
+          tab.className = "tab";
+          tab.textContent = account;
+          if (index === 0) {
+            tab.classList.add("active");
+          }
+          tab.addEventListener("click", () => {
+            document
+              .querySelectorAll(".tab")
+              .forEach((t) => t.classList.remove("active"));
+            tab.classList.add("active");
+            if (currentView === "summary") {
+              renderSummaryView(account);
+            } else {
+              renderDetailView(account);
+            }
+          });
+          tabsContainer.appendChild(tab);
+        });
+
+        // Render the first account's data by default
+        if (Object.keys(processedResults).length > 0) {
+          renderSummaryView(Object.keys(processedResults)[0]);
+        }
+      }
+
+      function switchView(view) {
+        currentView = view;
+        const activeTab = document.querySelector(".tab.active");
+        if (activeTab) {
+          const account = activeTab.textContent;
+          if (view === LogViewType.SUMMARY) {
+            renderSummaryView(account);
+          } else {
+            renderDetailView(account);
+          }
+        }
+      }
+
+      function renderSummaryView(account) {
+        let maxPie = 15;
+        const dataContainer = document.getElementById("data-container");
+        dataContainer.innerHTML = "";
+
+        const accountData = processedResults[account];
+        const summaryContainer = document.createElement("div");
+        summaryContainer.className = "summary-container";
+
+        // Most talked based on total_duration
+        const mostTalked = Object.entries(accountData)
+          .map(([key, value]) => ({ label: key, value: value.total_duration }))
+          .sort((a, b) => b.value - a.value)
+          .slice(0, maxPie);
+        const mostTalkedChart = createPieChart(
+          "Most Talked Based on Total Duration",
+          mostTalked,
+        );
+        summaryContainer.appendChild(mostTalkedChart);
+
+        // Most call count based on call_count
+        const mostCallCount = Object.entries(accountData)
+          .map(([key, value]) => ({ label: key, value: value.call_count }))
+          .sort((a, b) => b.value - a.value)
+          .slice(0, maxPie);
+        const mostCallCountChart = createPieChart(
+          "Most Call Count",
+          mostCallCount,
+        );
+        summaryContainer.appendChild(mostCallCountChart);
+
+        // Most call count for each category
+        Object.keys(CallType).forEach((type) => {
+          const callCountByCategory = Object.entries(accountData)
+            .map(([key, value]) => ({
+              label: key,
+              value:
+                value[`${CallTypeReverse[CallType[type]].toLowerCase()}_calls`]
+                  .length,
+            }))
+            .filter((item) => item.value > 0)
+            .sort((a, b) => b.value - a.value)
+            .slice(0, maxPie);
+
+          if (callCountByCategory.length > 0) {
+            const categoryChart = createPieChart(
+              `Most ${CallTypeReverse[CallType[type]].replace("_", " ").toUpperCase()} Count`,
+              callCountByCategory,
+            );
+            summaryContainer.appendChild(categoryChart);
+          }
+        });
+
+        dataContainer.appendChild(summaryContainer);
+      }
+
+      function createPieChart(title, data, maxSlices) {
+        const chartRow = document.createElement("div");
+        chartRow.className = "chart-row";
+        const container = document.createElement("div");
+        container.className = "chart-container";
+
+        if (data.length > 0) {
+          // Create canvas for chart
+          const canvas = document.createElement("canvas");
+          canvas.className = "pie-chart";
+          container.appendChild(canvas);
+
+          // Create legend container
+          const legendContainer = document.createElement("div");
+          legendContainer.className = "legend-container";
+
+          // Create Chart.js instance
+          new Chart(canvas, {
+            type: "pie",
+            data: {
+              labels: data.map((d) => d.label),
+              datasets: [
+                {
+                  data: data.map((d) => d.value),
+                  backgroundColor: generateColors(data.length),
+                  borderColor: "rgba(255, 255, 255, 0.8)",
+                  borderWidth: 1,
+                },
+              ],
+            },
+            options: {
+              responsive: true,
+              plugins: {
+                title: {
+                  display: true,
+                  text: title,
+                },
+                legend: {
+                  display: false,
+                },
+              },
+            },
+          });
+
+          // Add legend items
+          data.slice(0, maxSlices).forEach((d, i) => {
+            const legendItem = document.createElement("div");
+            legendItem.className = "legend-item";
+            const legendColor = document.createElement("span");
+            legendColor.className = "legend-color";
+            legendColor.style.backgroundColor = generateColors(data.length)[i];
+            legendItem.appendChild(legendColor);
+            const legendText = document.createTextNode(d.label);
+            legendItem.appendChild(legendText);
+            legendContainer.appendChild(legendItem);
+          });
+
+          // Append legend container
+          container.appendChild(legendContainer);
+          chartRow.appendChild(container);
+        }
+
+        return chartRow;
+      }
+
+      function generateColors(count) {
+        const colors = [
+          "#ff6384",
+          "#36a2eb",
+          "#ffce56",
+          "#4bc0c0",
+          "#9966ff",
+          "#ff9f40",
+          "#d32f2f",
+          "#c2185b",
+          "#7b1fa2",
+          "#512da8",
+          "#303f9f",
+          "#1976d2",
+          "#0288d1",
+          "#0097a7",
+          "#00796b",
+          "#388e3c",
+          "#689f38",
+          "#afb42b",
+          "#fbc02d",
+          "#ffa000",
+          "#f57c00",
+          "#e64a19",
+          "#5d4037",
+          "#616161",
+          "#455a64",
+        ];
+        return colors.slice(0, count);
+      }
+
+      function getHeaderColumns(account) {
+        let accountLogs = processedResults[account];
+        let firstLog = Object.values(accountLogs)[0];
+        let headerColumns = Object.keys(firstLog);
+        headerColumns = ["Name/Number", ...headerColumns];
+        //return ['Name/Number', 'Total Duration', 'Call Count', ...Object.keys(CallType).map(type => CallTypeReverse[CallType[type]].replace('_', ' ').toUpperCase())]
+        return headerColumns;
+      }
+
+      function renderDetailView(account) {
+        const dataContainer = document.getElementById("data-container");
+        dataContainer.innerHTML = "";
+
+        const accountData = processedResults[account];
+        const tableContainer = document.createElement("div");
+        tableContainer.className = "table-container";
+        const table = document.createElement("table");
+
+        const headerRow = document.createElement("tr");
+        const headerColumns = getHeaderColumns(account);
+        headerColumns.forEach((headerText) => {
+          const th = document.createElement("th");
+          th.textContent = headerText;
+          th.addEventListener("click", () => sortTable(account, headerText));
+          headerRow.appendChild(th);
+        });
+        table.appendChild(headerRow);
+
+        const dataRows = Object.entries(accountData).map(([key, value]) => {
+          const row = document.createElement("tr");
+          row.innerHTML = `
+                    <td>${key}</td>
+                    <td>${value.total_duration.toFixed(2)}</td>
+                    <td>${value.call_count}</td>
+                    ${Object.keys(CallType)
+                      .map(
+                        (type) =>
+                          `<td>${value[`${CallTypeReverse[CallType[type]].toLowerCase()}_calls`].length}</td>`,
+                      )
+                      .join("")}
+                `;
+          return row;
+        });
+
+        const paginatedRows = paginateData(dataRows, 1);
+        paginatedRows.forEach((row) => table.appendChild(row));
+
+        tableContainer.appendChild(table);
+        dataContainer.appendChild(tableContainer);
+
+        renderPagination(dataRows.length, 1, tableContainer, account);
+      }
+      // Function to update the sorting indicator on the table header
+      function updateSortIndicator(header, sortDirection) {
+        // Remove existing sorting indicators from all headers
+        document.querySelectorAll("th").forEach((th) => {
+          th.classList.remove("sorted-asc", "sorted-desc");
+        });
+
+        // Add sorting indicator to the clicked header
+        const headers = document.querySelectorAll("th");
+        headers.forEach((th) => {
+          if (th.textContent.trim() === header) {
+            // Toggle sort direction class
+            if (sortDirection === "desc") {
+              th.classList.remove("sorted-asc");
+              th.classList.add("sorted-desc");
+            } else {
+              th.classList.remove("sorted-desc");
+              th.classList.add("sorted-asc");
+            }
+          }
+        });
+      }
+
+      function sortTable(account, key) {
+        if (lastSortIndex == key) {
+          lastSortOrder = lastSortOrder === "asc" ? "desc" : "asc";
+        } else {
+          lastSortOrder = "desc";
+        }
+        lastSortIndex = key;
+
+        const accountData = processedResults[account];
+        const sortedData = Object.entries(accountData).sort((a, b) => {
+          const valA =
+            typeof a[1][key] === "string" ? a[1][key].toLowerCase() : a[1][key];
+          const valB =
+            typeof b[1][key] === "string" ? a[1][key].toLowerCase() : b[1][key];
+          return (
+            (valA < valB ? -1 : valA > valB ? 1 : 0) *
+            (lastSortOrder === "asc" ? 1 : -1)
+          );
+        });
+
+        processedResults[account] = Object.fromEntries(sortedData);
+        renderDetailView(account);
+
+        updateSortIndicator(key, lastSortOrder);
+      }
+
+      function paginateData(dataRows, page) {
+        return dataRows.slice(
+          (page - 1) * RESULTS_PER_PAGE,
+          page * RESULTS_PER_PAGE,
+        );
+      }
+
+      function renderPagination(
+        totalRows,
+        currentPage,
+        tableContainer,
+        account,
+      ) {
+        let paginationContainer = tableContainer.querySelector(
+          ".pagination-container",
+        );
+        if (!paginationContainer) {
+          paginationContainer = document.createElement("div");
+          paginationContainer.className = "pagination-container";
+        } else {
+          paginationContainer.innerHTML = "";
+        }
+
+        for (let i = 1; i <= Math.ceil(totalRows / RESULTS_PER_PAGE); i++) {
+          const button = document.createElement("span");
+          button.textContent = i;
+          button.className = `pagination-button ${i === currentPage ? "active" : ""}`;
+          button.addEventListener("click", () => {
+            const table = tableContainer.querySelector("table");
+            table.innerHTML = "";
+
+            // Re-add header row
+            const headerRow = document.createElement("tr");
+            const headerColumns = getHeaderColumns(account);
+            headerColumns.forEach((headerText) => {
+              const th = document.createElement("th");
+              th.textContent = headerText;
+              th.addEventListener("click", () =>
+                sortTable(account, headerText),
+              );
+              headerRow.appendChild(th);
+            });
+            table.appendChild(headerRow);
+
+            const paginatedRows = paginateData(
+              Object.entries(processedResults[account]).map(([key, value]) => {
+                const row = document.createElement("tr");
+                row.innerHTML = `
+                            <td>${key}</td>
+                            <td>${value.total_duration.toFixed(2)}</td>
+                            <td>${value.call_count}</td>
+                            ${Object.keys(CallType)
+                              .map(
+                                (type) =>
+                                  `<td>${value[`${CallTypeReverse[CallType[type]].toLowerCase()}_calls`].length}</td>`,
+                              )
+                              .join("")}
+                        `;
+                return row;
+              }),
+              i,
+            );
+            paginatedRows.forEach((row) => table.appendChild(row));
+
+            renderPagination(totalRows, i, tableContainer, account);
+          });
+          paginationContainer.appendChild(button);
+        }
+
+        if (!tableContainer.contains(paginationContainer)) {
+          tableContainer.appendChild(paginationContainer);
+        }
+      }
+
+      function showView(viewId) {
+        document.getElementById("home-view").classList.add("hidden");
+        document.getElementById("tab-summary-view").classList.add("hidden");
+        document.getElementById(viewId).classList.remove("hidden");
+      }
+    </script>
+  </body>
+</html>
